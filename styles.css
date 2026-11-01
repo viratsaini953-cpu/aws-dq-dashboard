@@ -1,0 +1,493 @@
+/* ==========================================================================
+   AWS Data Quality — visual system
+   --------------------------------------------------------------------------
+   IDENTITY: "editorial instrument". A printed laboratory report rather than a
+   SaaS dashboard: warm paper ground, serif display type, hairline rules,
+   tabular numerals, and exactly one chromatic accent. Status colour is
+   reserved for status — it never decorates.
+
+   Deliberate constraints:
+   - No purple/blue gradients. The accent is a deep instrument teal.
+   - No glassmorphism. Depth comes from 1px rules and one flat ink panel.
+   - Radii stay at 4-6px. Depth is drawn with borders, not shadows.
+   - Serif is used for headings only, never for data.
+   - Every transition is 120-160ms and disabled under reduced-motion.
+   ========================================================================== */
+
+/* ---------- 1. tokens ---------------------------------------------------- */
+:root{
+  /* paper / ink */
+  --paper:#F7F5F1;
+  --paper-2:#F0EDE7;
+  --surface:#FFFFFF;
+  --ink:#14181D;
+  --ink-2:#39414C;
+  --muted:#6E7683;
+  --faint:#9AA1AC;
+
+  /* structure */
+  --rule:#E3DED5;          /* visible hairline on paper */
+  --rule-soft:#EDEAE3;     /* internal dividers */
+  --rule-ink:#2A3138;      /* divider on the dark panel */
+
+  /* meaning — used only for state, never as decoration */
+  --accent:#14564F;
+  --accent-wash:#E7EFEC;
+  --green:#1D6B4A;
+  --amber:#9C5B0B;
+  --red:#A32B22;
+
+  /* geometry — 8px scale with 4px half-steps */
+  --r-xs:3px;
+  --r-sm:4px;
+  --r-md:6px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px;
+  --sp-5:24px; --sp-6:32px; --sp-7:48px;
+
+  /* type */
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,ui-serif,serif;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+
+  --ease:cubic-bezier(.2,.6,.2,1);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font:400 14px/1.55 var(--sans);
+  font-feature-settings:"tnum" 1,"cv05" 1;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* one consistent focus treatment for every interactive element */
+:where(button,select,a,[tabindex]):focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:var(--r-sm);
+}
+
+/* ---------- 2. type scale ------------------------------------------------ */
+h1,h2,h3,h4{font-family:var(--serif);font-weight:600;color:var(--ink);margin:0}
+h3{
+  font-size:15px;letter-spacing:.1px;margin-bottom:var(--sp-3);
+  padding-bottom:var(--sp-2);border-bottom:1px solid var(--rule-soft);
+}
+p{margin:0}
+.hint{font-size:11.5px;line-height:1.55;color:var(--muted);margin-top:var(--sp-3)}
+.muted{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.num,td.num,.kpi .v{font-variant-numeric:tabular-nums}
+
+/* ---------- 3. header ---------------------------------------------------- */
+header{
+  position:relative;
+  padding:var(--sp-6) var(--sp-6) 0;
+  background:var(--paper);
+  border-bottom:1px solid var(--rule);
+  overflow:hidden;
+}
+/* the particle field is thematic (airborne particulates), not ornament:
+   pushed to a texture-level opacity and paused for reduced-motion users. */
+#air{
+  position:absolute;inset:0;width:100%;height:100%;
+  opacity:.30;pointer-events:none;z-index:0;
+}
+header>*:not(#air){position:relative;z-index:1}
+
+h1{
+  font-size:clamp(20px,2.1vw,27px);
+  line-height:1.22;
+  letter-spacing:-.2px;
+  padding-left:46px;
+  min-height:38px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  background-repeat:no-repeat;
+  background-position:left 2px;
+  background-size:34px 34px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><rect x='1' y='1' width='46' height='46' rx='6' fill='%2314564F'/><circle cx='24' cy='15' r='4.4' fill='%23F7F5F1'/><path d='M24 21.5v12.5M17.5 34h13M20 28.5h8' stroke='%23F7F5F1' stroke-width='2.3' stroke-linecap='round' fill='none'/></svg>");
+}
+h1 span{
+  display:block;
+  margin-top:5px;
+  font-family:var(--sans);
+  font-size:11.5px;
+  font-weight:400;
+  letter-spacing:.01em;
+  color:var(--muted);
+  line-height:1.4;
+}
+
+/* meta renders as a specification strip: label above value */
+.meta{
+  display:flex;flex-wrap:wrap;gap:0;
+  margin-top:var(--sp-5);
+  border-top:1px solid var(--rule-soft);
+}
+.meta>span,.meta>div{
+  display:flex;flex-direction:column;gap:2px;
+  padding:var(--sp-2) var(--sp-5) var(--sp-2) 0;
+  margin-right:var(--sp-5);
+  border-right:1px solid var(--rule-soft);
+}
+.meta>span:last-child,.meta>div:last-child{border-right:0;margin-right:0;padding-right:0}
+.meta b{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
+.meta i,.meta small{font-style:normal;font-size:10px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--faint)}
+
+/* ---------- 4. navigation ------------------------------------------------ */
+nav{
+  display:flex;gap:var(--sp-6);
+  margin-top:var(--sp-5);
+  overflow-x:auto;
+  scrollbar-width:none;
+}
+nav::-webkit-scrollbar{display:none}
+nav button{
+  appearance:none;background:none;border:0;cursor:pointer;
+  font:500 12.5px/1 var(--sans);
+  letter-spacing:.02em;
+  color:var(--muted);
+  padding:0 0 13px;
+  white-space:nowrap;
+  position:relative;
+  transition:color .14s var(--ease);
+}
+nav button::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;
+  background:var(--ink);transform:scaleX(0);transform-origin:left;
+  transition:transform .18s var(--ease);
+}
+nav button:hover{color:var(--ink-2)}
+nav button.on{color:var(--ink);font-weight:600}
+nav button.on::after{transform:scaleX(1)}
+
+/* ---------- 5. layout ---------------------------------------------------- */
+main{padding:var(--sp-5) var(--sp-6) var(--sp-7);max-width:1560px}
+.grid{display:grid;gap:var(--sp-4)}
+.grid.two{grid-template-columns:1fr 1fr}
+section[hidden]{display:none}
+
+.card{
+  background:var(--surface);
+  border:1px solid var(--rule);
+  border-radius:var(--r-md);
+  padding:var(--sp-4) var(--sp-5) var(--sp-5);
+}
+
+/* ---------- 6. KPI strip ------------------------------------------------- */
+/* One instrument panel divided by hairlines — not six identical cards. */
+.grid.kpis{
+  grid-template-columns:repeat(6,1fr);
+  gap:0;
+  background:var(--surface);
+  border:1px solid var(--rule);
+  border-radius:var(--r-md);
+  overflow:hidden;
+}
+.kpi{
+  padding:var(--sp-4) var(--sp-4) var(--sp-4);
+  border-left:1px solid var(--rule-soft);
+  min-height:96px;
+  display:flex;flex-direction:column;justify-content:flex-start;
+}
+.kpi:first-child{border-left:0}
+.kpi .kv,.kpi .l{
+  font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);font-weight:500;line-height:1.3;
+}
+.kpi .v{
+  font-family:var(--serif);
+  font-size:30px;font-weight:600;line-height:1.1;
+  margin:var(--sp-2) 0 2px;
+  letter-spacing:-.5px;
+}
+.kpi .d{font-size:11px;color:var(--faint);line-height:1.35}
+.good{color:var(--green)}
+.warn{color:var(--amber)}
+.bad{color:var(--red)}
+
+/* banner breaks out of the KPI grid and spans it */
+.banner{
+  grid-column:1/-1;
+  display:grid;grid-template-columns:330px 1fr;grid-template-rows:200px;
+  border-bottom:1px solid var(--rule);
+  background:var(--ink);
+}
+.banner .bimg{width:100%;height:200px;object-fit:cover;object-position:center 12%;
+  display:block;filter:saturate(.92) contrast(1.02)}
+.banner .bveil{display:none}
+.banner .btxt{
+  position:static;transform:none;max-width:none;
+  display:flex;flex-direction:column;justify-content:center;
+  padding:var(--sp-5) var(--sp-6);
+  color:#F4F1EA;
+}
+.banner .btxt h2{
+  font-family:var(--serif);font-size:21px;font-weight:600;color:#FBF9F5;
+  margin:0 0 var(--sp-2);letter-spacing:-.1px;
+}
+.banner .btxt p{
+  font-size:12.5px;line-height:1.6;color:#C3C8CE;max-width:60ch;
+}
+.banner .pillrow{display:flex;gap:var(--sp-2);margin-top:var(--sp-4);flex-wrap:wrap}
+.banner .pb{
+  font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:500;
+  color:#D7DBE0;border:1px solid #3A424B;border-radius:var(--r-xs);
+  padding:3px 8px;
+}
+
+/* ---------- 7. sensor strip --------------------------------------------- */
+.sensorstrip{
+  grid-column:1/-1;display:flex;flex-wrap:wrap;gap:0;
+  border-top:1px solid var(--rule);background:var(--surface);
+}
+.sensorchip{
+  flex:1 1 160px;display:flex;align-items:center;gap:10px;
+  padding:var(--sp-3) var(--sp-4);
+  border-left:1px solid var(--rule-soft);
+}
+.sensorchip:first-of-type{border-left:0}
+.sensorchip svg{width:22px;height:22px;flex:none;opacity:.85}
+.sensorchip .n{font-size:11.5px;font-weight:600;line-height:1.2;color:var(--ink-2)}
+.sensorchip .c{font-size:10.5px;color:var(--faint);margin-top:1px}
+.dot{width:5px;height:5px;border-radius:50%;display:inline-block;
+  margin-right:5px;vertical-align:middle}
+.phototile{
+  flex:0 0 132px;position:relative;overflow:hidden;
+  border-left:0;
+}
+.phototile img{width:100%;height:100%;object-fit:cover;display:block;
+  filter:saturate(.9)}
+.phototile span{
+  position:absolute;left:0;right:0;bottom:0;
+  padding:14px 8px 5px;font-size:8.5px;letter-spacing:.1em;font-weight:600;
+  text-transform:uppercase;color:#fff;
+  background:linear-gradient(180deg,transparent,rgba(10,14,18,.82));
+}
+
+/* ---------- 8. controls ------------------------------------------------- */
+.controls{
+  display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
+  margin-bottom:var(--sp-4);
+}
+.controls label{margin-right:-6px}
+select{
+  appearance:none;
+  font:500 12.5px/1 var(--sans);
+  color:var(--ink);
+  background:var(--surface)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0l5 6 5-6z' fill='%236E7683'/></svg>")
+    no-repeat right 10px center;
+  border:1px solid var(--rule);
+  border-radius:var(--r-sm);
+  padding:7px 26px 7px 10px;
+  cursor:pointer;
+  transition:border-color .14s var(--ease),background-color .14s var(--ease);
+}
+select:hover{border-color:#CFC8BC}
+select:active{background-color:var(--paper-2)}
+
+/* ---------- 9. charts --------------------------------------------------- */
+canvas{width:100%;display:block;border-radius:var(--r-sm)}
+#chart{margin-bottom:var(--sp-2)}
+.legend{
+  display:flex;flex-wrap:wrap;gap:var(--sp-4);
+  padding-top:var(--sp-3);border-top:1px solid var(--rule-soft);
+  font-size:11px;color:var(--muted);
+}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.legend span:nth-child(1) i{background:var(--accent)}
+.legend span:nth-child(2) i{background:var(--red)}
+.legend span:nth-child(3) i{background:rgba(20,86,79,.20)}
+.legend span:nth-child(4) i{background:rgba(156,91,11,.22)}
+
+/* ---------- 10. tables -------------------------------------------------- */
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{
+  position:sticky;top:0;z-index:1;
+  background:var(--surface);
+  font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  font-weight:600;color:var(--muted);
+  text-align:left;
+  padding:0 var(--sp-2) var(--sp-2);
+  border-bottom:1px solid var(--rule);
+  white-space:nowrap;
+}
+tbody td{
+  padding:7px var(--sp-2);
+  border-bottom:1px solid var(--rule-soft);
+  color:var(--ink-2);
+  vertical-align:middle;
+}
+tbody tr{transition:background-color .12s var(--ease)}
+tbody tr:hover{background:var(--paper)}
+td.num{text-align:right}
+td.nowrap,.nowrap{white-space:nowrap}
+
+/* row-as-link affordance for the flag table */
+#flagTable table tbody tr{cursor:pointer}
+#flagTable table tbody tr:hover{background:var(--accent-wash)}
+
+/* ---------- 11. pills / status ----------------------------------------- */
+.pill{
+  display:inline-flex;align-items:center;
+  font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 6px;border-radius:var(--r-xs);
+  border:1px solid var(--rule);color:var(--ink-2);background:transparent;
+  white-space:nowrap;
+}
+.pill.confirmed{color:#14603F;border-color:#BEDCCB;background:#EDF6F1}
+.pill.probable{color:var(--amber);border-color:#E4D2B4;background:#FBF5EA}
+.pill.needs_review{color:var(--red);border-color:#E6C3BE;background:#FAEFED}
+.pill.ft{color:var(--accent);border-color:#C3D9D3;background:var(--accent-wash)}
+
+/* ---------- 12. horizontal bars ---------------------------------------- */
+/* JS emits .bar > i; keep the track invisible and let the rule do the work. */
+.bar{
+  display:block;height:5px;background:var(--rule-soft);
+  border-radius:2px;overflow:hidden;margin-top:5px;
+}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:2px;
+  transition:width .4s var(--ease)}
+.row{display:flex;align-items:baseline;gap:var(--sp-2);padding:5px 0;
+  border-bottom:1px solid var(--rule-soft)}
+.row:last-child{border-bottom:0}
+.row .k{flex:1;font-size:12px;color:var(--ink-2)}
+.row .v{font-variant-numeric:tabular-nums;font-size:12px;font-weight:600}
+
+/* ---------- 13. empty / loading states --------------------------------- */
+.empty{
+  padding:var(--sp-6) var(--sp-4);
+  text-align:center;
+  font-size:12px;
+  color:var(--faint);
+  border:1px dashed var(--rule);
+  border-radius:var(--r-sm);
+  background:var(--paper);
+}
+.verdict{
+  font-family:var(--serif);
+  font-size:15px;line-height:1.6;color:var(--ink-2);
+  padding-bottom:var(--sp-4);margin-bottom:var(--sp-4);
+  border-bottom:1px solid var(--rule-soft);
+}
+.verdict b{color:var(--ink);font-weight:600}
+
+/* ---------- 14. evidence drawer ---------------------------------------- */
+.drawer{
+  position:fixed;top:0;right:0;bottom:0;
+  width:min(540px,94vw);
+  background:var(--surface);
+  border-left:1px solid var(--rule);
+  box-shadow:-24px 0 48px -32px rgba(20,24,29,.4);
+  transform:translateX(101%);
+  transition:transform .26s var(--ease);
+  z-index:40;
+  overflow-y:auto;
+  padding:var(--sp-5) var(--sp-5) var(--sp-7);
+}
+.drawer.open,.drawer.on{transform:none}
+.drawer .close{
+  position:sticky;top:0;float:right;
+  background:var(--surface);border:1px solid var(--rule);
+  border-radius:var(--r-sm);width:26px;height:26px;
+  font-size:15px;line-height:1;color:var(--muted);cursor:pointer;
+  transition:color .14s var(--ease),border-color .14s var(--ease);
+}
+.drawer .close:hover{color:var(--ink);border-color:#CFC8BC}
+#drawerBody{clear:both;padding-top:var(--sp-3)}
+#drawerBody h3{margin-top:var(--sp-4)}
+#drawerBody table{margin-top:var(--sp-2)}
+pre{
+  background:var(--paper);border:1px solid var(--rule);
+  border-radius:var(--r-sm);padding:var(--sp-3);
+  font:12px/1.5 var(--mono);color:var(--ink-2);
+  overflow-x:auto;white-space:pre-wrap;
+}
+
+/* backdrop makes the panel feel modal and keeps the page unclickable */
+.drawer::before{
+  content:"";position:fixed;inset:0;right:min(540px,94vw);
+  background:rgba(20,24,29,.18);
+  opacity:0;pointer-events:none;transition:opacity .22s var(--ease);
+}
+.drawer.open::before,.drawer.on::before{opacity:1;pointer-events:auto}
+
+/* ---------- 15. responsive --------------------------------------------- */
+/* Deliberately re-composed, not shrunk: the KPI strip becomes a 3x2 grid,
+   the banner stacks, and the drawer turns into a bottom sheet. */
+
+@media(max-width:1180px){
+  .grid.kpis{grid-template-columns:repeat(3,1fr)}
+  .kpi:nth-child(3n+1){border-left:0}
+  .kpi:nth-child(n+4){border-top:1px solid var(--rule-soft)}
+}
+@media(max-width:980px){
+  main{padding:var(--sp-4) var(--sp-4) var(--sp-7)}
+  header{padding:var(--sp-5) var(--sp-4) 0}
+  .grid.two{grid-template-columns:1fr}
+  .banner{grid-template-columns:240px 1fr;grid-template-rows:176px}
+  .banner .bimg{height:176px}
+  .banner .btxt{padding:var(--sp-4) var(--sp-5)}
+  .banner .btxt h2{font-size:18px}
+  .banner .btxt p{font-size:12px}
+  nav{gap:var(--sp-5)}
+}
+@media(max-width:720px){
+  .grid,.grid.two,.card{min-width:0}
+  .grid.two>*{min-width:0}
+  #acceptance,#cmpTable,#flagTable,#qcRules,#qcVars,#qcEvents,#seriesFlags{overflow-x:auto;min-width:0}
+  /* last resort: a card can never widen the document */
+  section{max-width:100%;overflow-x:clip}
+  #acceptance table{font-size:11px}
+  #acceptance th{white-space:normal}
+  #flagTable td:first-child{white-space:nowrap}
+  nav{padding-right:var(--sp-5)}
+  .grid.kpis{grid-template-columns:repeat(2,1fr)}
+  .kpi:nth-child(n){border-left:1px solid var(--rule-soft);border-top:1px solid var(--rule-soft)}
+  .kpi:nth-child(2n+1){border-left:0}
+  .kpi:nth-child(-n+2){border-top:0}
+  .kpi .v{font-size:26px}
+  .banner{grid-template-columns:1fr;grid-template-rows:150px auto}
+  .banner .bimg{height:150px}
+  .banner .btxt{padding:var(--sp-4)}
+  .banner .pillrow{margin-top:var(--sp-3)}
+  .sensorchip{flex:1 1 50%;border-top:1px solid var(--rule-soft)}
+  .phototile{display:none}
+  h1{padding-left:0;background-position:left top;padding-top:40px}
+  .meta>span,.meta>div{padding-right:var(--sp-4);margin-right:var(--sp-4)}
+  /* tables become horizontally scrollable rather than squashed */
+  #flagTable,#cmpTable,#qcRules,#qcVars{overflow-x:auto}
+  .drawer{
+    top:auto;left:0;right:0;bottom:0;width:100%;height:82vh;
+    border-left:0;border-top:1px solid var(--rule);
+    border-radius:var(--r-md) var(--r-md) 0 0;
+    transform:translateY(101%);
+  }
+  .drawer.open{transform:none}
+  .drawer::before{right:0;inset:0}
+}
+
+/* ---------- 16. motion accessibility ----------------------------------- */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+/* ---------- 17. print --------------------------------------------------- */
+@media print{
+  header{background:#fff}
+  #air,nav,.controls{display:none}
+  .card{break-inside:avoid;border-color:#ccc}
+  main{padding:0}
+}

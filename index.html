@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AWS Data Quality &amp; Fault Detection</title>
+<link rel="stylesheet" href="styles.css" />
+<meta name="theme-color" content="#F7F5F1" />
+</head>
+<body>
+<header>
+<canvas id="air" aria-hidden="true"></canvas>
+<h1>Automatic Weather Station — Data Quality &amp; Fault Detection
+    <span>rolling-window features · Isolation Forest vs DBSCAN · per-flag attribution</span></h1>
+  <div class="meta" id="meta"></div>
+  <nav>
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="series">Time series</button>
+    <button data-tab="flags">Flags &amp; evidence</button>
+    <button data-tab="compare">Model comparison</button>
+    <button data-tab="dq">Data quality</button>
+  </nav>
+</header>
+
+<main>
+  <!-- OVERVIEW -->
+  <section id="tab-overview">
+    <div class="grid kpis" id="kpis"></div>
+    <div class="grid two" style="margin-top:14px">
+      <div class="card"><h3>Acceptance gate</h3>
+        <div id="acceptance"></div></div>
+      <div class="card"><h3>Detection by fault type</h3>
+        <div id="bytype"></div>
+        <p class="hint">Window recall = share of injected episodes with at least one
+          flag inside the fault window, after a 6-step onset grace period.</p></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Flag distribution</h3>
+      <div class="grid two"><div id="byvar"></div><div id="byftype"></div></div></div>
+  </section>
+
+  <!-- SERIES -->
+  <section id="tab-series" hidden>
+    <div class="controls">
+      <label class="muted">Sensor</label>
+      <select id="varSel"></select>
+      <label class="muted">Zoom</label>
+      <select id="zoomSel">
+        <option value="1">full month</option>
+        <option value="0.5">2 weeks</option>
+        <option value="0.25">1 week</option>
+        <option value="0.1">3 days</option>
+      </select>
+      <span class="hint" id="seriesHint"></span>
+    </div>
+    <div class="card">
+      <canvas id="chart" height="380"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>reported value</span>
+        <span><i style="background:#DC2626"></i>flagged record</span>
+        <span><i style="background:rgba(188,140,255,.28)"></i>known fault window (ground truth)</span>
+        <span><i style="background:rgba(210,153,34,.22)"></i>onset grace period</span>
+      </div>
+      <p class="hint">Gaps in the line are logger dropouts (missing values, not zero).
+        Fault windows come from the injection schedule and are shown only for
+        evaluation — the detector never sees them.</p>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Flags on this sensor</h3>
+      <div id="seriesFlags"></div></div>
+  </section>
+
+  <!-- FLAGS -->
+  <section id="tab-flags" hidden>
+    <div class="controls">
+      <select id="fStatus"><option value="">all statuses</option></select>
+      <select id="fVar"><option value="">all sensors</option></select>
+      <select id="fType"><option value="">all fault types</option></select>
+      <span class="hint" id="flagCount"></span>
+    </div>
+    <div class="card"><div id="flagTable"></div>
+      <p class="hint">Click any row for the full evidence trail. “Deviating feature”
+        is the largest occlusion contribution for that record — the feature whose
+        neutralisation most reduces the anomaly score.</p></div>
+  </section>
+
+  <!-- COMPARE -->
+  <section id="tab-compare" hidden>
+    <div class="card"><div class="verdict" id="verdict"></div>
+      <canvas id="cmpChart" height="260"></canvas></div>
+    <div class="card" style="margin-top:14px"><h3>Metric table</h3>
+      <div id="cmpTable"></div>
+      <p class="hint">PR-AUC is threshold-free and is the primary criterion.
+        DBSCAN's PR-AUC uses a density-distance ranking as a diagnostic only —
+        its native decision is binary (noise / not noise).</p></div>
+  </section>
+
+  <!-- DQ -->
+  <section id="tab-dq" hidden>
+    <div class="grid kpis" id="dqKpis"></div>
+    <div class="grid two" style="margin-top:14px">
+      <div class="card"><h3>Rule events</h3><div id="qcRules"></div></div>
+      <div class="card"><h3>Events by variable</h3><div id="qcVars"></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Recent rule events</h3>
+      <div id="qcEvents"></div></div>
+  </section>
+</main>
+
+<div class="drawer" id="drawer"><button class="close" onclick="closeDrawer()">×</button>
+  <div id="drawerBody"></div></div>
+
+<script src="static-api.js"></script>
+<script>
+const S = { data:null, var:'air_temp', zoom:1, flags:[] };
+const $ = s => document.querySelector(s);
+const fmt = (v,d=3) => (v===null||v===undefined||Number.isNaN(v)) ? '—' : Number(v).toFixed(d);
+const pct = v => (v===null||v===undefined||Number.isNaN(v)) ? '—' : (100*Number(v)).toFixed(1)+'%';
+/* ===================== boot ===================== */
+async function boot(){
+  const r = await fetch('/api/summary');
+  if(!r.ok){ document.querySelector('main').innerHTML =
+    '<div class="empty">No results yet — run <code>python run.py</code> then reload.</div>'; return; }
+  const sum = await r.json();
+  const full = await (await fetch('/api/flags?limit=10000')).json();
+  S.data = sum; S.flags = full.flags;
+  renderMeta(); renderKpis(); renderBanner(); renderAcceptance(); renderByType();
+  renderFlagDist(); renderSensorArt(); buildFilters(); renderFlags();
+  await loadSeries('air_temp');
+  await loadCompare(); await loadQc();
+  renderSeriesFlags();
+}
+boot();
+
+/* ===================== tabs ===================== */
+document.querySelectorAll('nav button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    ['overview','series','flags','compare','dq'].forEach(t=>
+      document.getElementById('tab-'+t).hidden = (t !== b.dataset.tab));
+    if(b.dataset.tab==='series') drawChart();
+    if(b.dataset.tab==='compare') drawCompare();
+  };
+});
+
+/* ===================== overview ===================== */
+function renderMeta(){
+  const m = S.data.meta;
+  $('#meta').innerHTML = [
+    `records <b>${m.records.toLocaleString()}</b>`,
+    `span <b>${m.start.slice(0,10)} → ${m.end.slice(0,10)}</b>`,
+    `interval <b>${m.sample_minutes} min</b>`,
+    `seed <b>${m.seed}</b>`,
+    `features <b>${S.data.feature_count}</b>`,
+    `generated <b>${m.generated.replace('T',' ')}</b>`
+  ].map(x=>`<span>${x}</span>`).join('');
+}
+
+function kpi(label,value,sub,delta,cls){
+  return `<div class="card kpi"><h3>${label}</h3><div class="v ${cls||''}">${value}</div>
+    <div class="s">${sub||''}</div>${delta?`<div class="d ${cls||'muted'}">${delta}</div>`:''}</div>`;
+}
+
+function renderKpis(){
+  const d = S.data, f = d.iforest, a = d.attribution;
+  const acc = d.acceptance;
+  $('#kpis').innerHTML = [
+    kpi('Isolation Forest PR-AUC', fmt(f.pr_auc), 'held-out 15 days, threshold-free',
+        acc.checks.AC04_iforest_pr_auc_min.pass?'meets AC-04':'below AC-04',
+        acc.checks.AC04_iforest_pr_auc_min.pass?'ok':'bad'),
+    kpi('Fault episodes detected', pct(f.window_recall),
+        `${f.windows_detected}/${f.windows_evaluated} windows`,
+        `median latency ${fmt(f.median_latency_steps,0)} steps`),
+    kpi('False alarms / day', fmt(f.false_alarms_per_day,2),
+        acc.checks.AC06_false_alarms_per_day_max.pass?'within budget':'over budget',
+        `budget ≤ ${acc.checks.AC06_false_alarms_per_day_max.threshold}`,
+        acc.checks.AC06_false_alarms_per_day_max.pass?'ok':'bad'),
+    kpi('Attribution hit@1', pct(a.hit_at_1),
+        `top-3 ${pct(a.hit_at_3)} · n=${a.n_scored}`,
+        'reported feature is the faulty one', a.hit_at_1>=0.7?'ok':'warn'),
+    kpi('Flags raised', d.flag_summary.total,
+        `${(S.flags||[]).filter(x=>x.review_required).length} need review`,
+        `resolved ${pct(a.resolved_fraction)}`),
+    kpi('Acceptance', `${acc.passed}/${acc.total}`, 'criteria passed',
+        acc.all_pass?'all gates met':'action required', acc.all_pass?'ok':'bad')
+  ].join('');
+}
+
+function renderAcceptance(){
+  const c = S.data.acceptance.checks;
+  let h = '<table><thead><tr><th>Criterion</th><th class="num">Value</th><th class="num">Gate</th><th></th></tr></thead><tbody>';
+  for(const [k,v] of Object.entries(c)){
+    const val = typeof v.value==='number' ? (Math.abs(v.value)<=1.001? pct(v.value) : fmt(v.value,2)) : v.value;
+    h += `<tr><td>${k}</td><td class="num">${val}</td>
+      <td class="num muted">${v.op} ${Math.abs(v.threshold)<=1.001?pct(v.threshold):v.threshold}</td>
+      <td class="num ${v.pass?'ok':'bad'}">${v.pass?'PASS':'FAIL'}</td></tr>`;
+  }
+  $('#acceptance').innerHTML = h + '</tbody></table>';
+}
+
+function barList(obj, denom, color){
+  const entries = Object.entries(obj||{}).sort((a,b)=>b[1]-a[1]);
+  const max = denom || Math.max(...entries.map(e=>e[1]),1);
+  return entries.map(([k,v])=>`
+    <div style="margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;font-size:12.5px">
+        <span>${k}</span><span class="muted">${typeof v==='number'&&v<=1?pct(v):v}</span></div>
+      <div class="bar"><i style="width:${Math.min(100,100*v/max)}%;background:${color||'var(--accent)'}"></i></div>
+    </div>`).join('') || '<div class="empty">none</div>';
+}
+
+function renderByType(){
+  const bt = S.data.iforest.window_recall_by_type || {};
+  const obj = {}; for(const [k,v] of Object.entries(bt)) obj[k+' ('+v.n+')'] = v.recall;
+  $('#bytype').innerHTML = barList(obj, 1, 'var(--teal)');
+}
+
+function renderFlagDist(){
+  $('#byvar').innerHTML = '<h3>by sensor</h3>' + barList(S.data.flag_summary.by_variable);
+  $('#byftype').innerHTML = '<h3>by attributed fault type</h3>' +
+    barList(S.data.flag_summary.by_type, null, 'var(--purple)');
+}
+/* ===================== time series ===================== */
+async function loadWindows(){
+  if(S.windows) return S.windows;
+  S.windows = (await (await fetch('/api/windows')).json()).windows;
+  return S.windows;
+}
+
+async function loadSeries(v){
+  S.var = v;
+  const r = await fetch('/api/series/'+v);
+  S.series = await r.json();
+  await loadWindows();
+  if(!document.getElementById('offsetSel')){
+    const w = document.createElement('input');
+    w.type='range'; w.id='offsetSel'; w.min=0; w.max=100; w.value=0;
+    w.style.width='200px'; w.title='scroll position';
+    w.oninput = ()=>{ S.offset = +w.value/100; drawChart(); };
+    $('.controls').appendChild(w);
+  }
+  S.offset = S.offset || 0;
+  updateOffsetRange();
+  drawChart();
+  renderSeriesFlags();
+}
+
+function updateOffsetRange(){
+  const occ = 1 - S.zoom;
+  const el = document.getElementById('offsetSel');
+  if(!el) return;
+  el.max = Math.max(1, Math.round(100*occ));
+  el.value = Math.round(100*(S.offset||0));
+  el.disabled = occ <= 0.001;
+}
+
+$('#varSel').onchange = e => loadSeries(e.target.value);
+$('#zoomSel').onchange = e => { S.zoom = +e.target.value; S.offset = 0;
+  updateOffsetRange(); drawChart(); };
+
+function drawChart(){
+  if(!S.series) return;
+  const cv = $('#chart'), dpr = window.devicePixelRatio||1;
+  const W = cv.clientWidth, H = 380;
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.height = H+'px';
+  const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+
+  const ts = S.series.timestamps, vals = S.series.values, n = vals.length;
+  const span = Math.max(2, Math.floor(n*S.zoom));
+  const start = Math.min(n-span, Math.floor((n-span)*(S.offset||0)));
+  const end = start + span;
+  const padL=58, padR=14, padT=14, padB=30;
+  const pw = W-padL-padR, ph = H-padT-padB;
+
+  let mn=Infinity, mx=-Infinity;
+  for(let i=start;i<end;i++){ const v=vals[i]; if(v!==null){ if(v<mn)mn=v; if(v>mx)mx=v; } }
+  if(!isFinite(mn)){ mn=0; mx=1; }
+  const padv=(mx-mn)*0.12||1; mn-=padv; mx+=padv;
+
+  const X = i => padL + (i-start)/(span-1)*pw;
+  const Y = v => padT + ph - (v-mn)/(mx-mn)*ph;
+  S.layout = {start,end,padL,padT,pw,ph,mn,mx,X,Y,span};
+
+  // grid + y labels
+  g.font='11px ui-monospace,monospace'; g.textBaseline='middle';
+  for(let k=0;k<=4;k++){
+    const y = padT + ph*k/4, val = mx-(mx-mn)*k/4;
+    g.strokeStyle='#E1E7F1'; g.beginPath(); g.moveTo(padL,y); g.lineTo(W-padR,y); g.stroke();
+    g.fillStyle='#64748B'; g.textAlign='right';
+    g.fillText(val.toFixed(1), padL-8, y);
+  }
+
+  // fault windows (ground truth)
+  const wins = (S.windows||[]).filter(w=>w.variable===S.var);
+  for(const w of wins){
+    const a=Math.max(start,w.start_step), b=Math.min(end-1,w.end_step+1);
+    if(b<a) continue;
+    g.fillStyle='rgba(188,140,255,.16)';
+    g.fillRect(X(a), padT, Math.max(2,X(b)-X(a)), ph);
+    // onset grace period
+    const ga=Math.min(b, w.start_step+6);
+    g.fillStyle='rgba(210,153,34,.18)';
+    g.fillRect(X(a), padT, Math.max(1.5,X(ga)-X(a)), ph);
+    if(X(b)-X(a) > 60){
+      g.fillStyle='#7C3AED'; g.font='10px ui-monospace,monospace'; g.textAlign='left';
+      g.fillText(w.fault_type, X(a)+4, padT+9);
+    }
+  }
+
+  // value polyline, breaking at nulls
+  g.strokeStyle='#4F46E5'; g.lineWidth=1.4; g.beginPath();
+  let pen=false;
+  for(let i=start;i<end;i++){
+    const v=vals[i];
+    if(v===null){ pen=false; continue; }
+    const x=X(i), y=Y(v);
+    if(pen) g.lineTo(x,y); else { g.moveTo(x,y); pen=true; }
+  }
+  g.stroke();
+
+  // flags
+  const byStep = new Map();
+  for(const f of (S.series.flag_markers||[])) byStep.set(+f.step, f);
+  for(const [st,f] of byStep){
+    if(st<start||st>=end) continue;
+    const x=X(st), v=vals[st];
+    const y = v===null ? padT+ph-2 : Y(v);
+    g.fillStyle = (f.status==='needs_review'||f.review_required) ? '#B45309' : '#DC2626';
+    g.beginPath(); g.arc(x,y,3.4,0,7); g.fill();
+    g.strokeStyle='rgba(248,81,73,.35)'; g.lineWidth=1;
+    g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+ph); g.stroke();
+  }
+
+  // x labels
+  g.fillStyle='#64748B'; g.textAlign='center'; g.textBaseline='top';
+  for(let k=0;k<=4;k++){
+    const i = start + Math.floor((span-1)*k/4);
+    const d = new Date(ts[i]*1000);
+    g.fillText(d.toISOString().slice(5,16).replace('T',' '), X(i), padT+ph+8);
+  }
+
+  if(S.hover!=null) drawHover(g);
+}
+
+function drawHover(g){
+  const L = S.layout, i = S.hover;
+  if(!L || i<L.start || i>=L.end) return;
+  const v = S.series.values[i], x = L.X(i);
+  g.strokeStyle='#334155'; g.setLineDash([3,3]); g.beginPath();
+  g.moveTo(x,L.padT); g.lineTo(x,L.padT+L.ph); g.stroke(); g.setLineDash([]);
+  const txt = new Date(S.series.timestamps[i]*1000).toISOString().slice(0,16).replace('T',' ')
+    + '   ' + (v===null?'MISSING':v.toFixed(2)+' '+S.series.unit);
+  g.font='11px ui-monospace,monospace';
+  const w = g.measureText(txt).width + 14;
+  let bx = x+8; if(bx+w > L.padL+L.pw) bx = x-w-8;
+  g.fillStyle='rgba(255,255,255,.97)'; g.strokeStyle='#D8E0EC';
+  g.fillRect(bx, L.padT+4, w, 20); g.strokeRect(bx, L.padT+4, w, 20);
+  g.fillStyle='#16233A'; g.textAlign='left'; g.textBaseline='middle';
+  g.fillText(txt, bx+7, L.padT+14);
+}
+
+$('#chart').addEventListener('mousemove', ev=>{
+  if(!S.layout) return;
+  const r = ev.target.getBoundingClientRect(), L = S.layout;
+  if(ev.clientX-r.left < L.padL) return;
+  const f = (ev.clientX-r.left-L.padL)/L.pw;
+  S.hover = Math.max(L.start, Math.min(L.end-1, L.start+Math.round(f*(L.span-1))));
+  drawChart();
+});
+$('#chart').addEventListener('mouseleave', ()=>{ S.hover=null; drawChart(); });
+
+function renderSeriesFlags(){
+  const rows = (S.series.flag_markers||[]).slice(0,40);
+  if(!rows.length){ $('#seriesFlags').innerHTML='<div class="empty">no flags on this sensor</div>'; return; }
+  let h = '<table><thead><tr><th>time</th><th>deviating feature</th><th>fault type</th>'+
+          '<th class="num">z</th><th class="num">conf</th><th>status</th></tr></thead><tbody>';
+  for(const f of rows){
+    h += `<tr onclick="openDrawer(${f.step})">
+      <td>${String(f.timestamp).slice(5,16)}</td>
+      <td><code>${f.top_feature}</code></td>
+      <td><span class="pill ft">${f.fault_type}</span></td>
+      <td class="num">${fmt(f.z_baseline,2)}</td>
+      <td class="num">${pct(f.confidence)}</td>
+      <td><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></td></tr>`;
+  }
+  $('#seriesFlags').innerHTML = h+'</tbody></table>';
+}
+/* ===================== flags & evidence ===================== */
+function buildFilters(){
+  const st = new Set(), vr = new Set(), ft = new Set();
+  S.flags.forEach(f=>{ st.add(f.status); vr.add(f.variable); ft.add(f.fault_type); });
+  const fill=(sel,set,label)=>{
+    const el=$(sel); set.forEach(v=>{
+      const o=document.createElement('option'); o.value=v; o.textContent=v.replace('_',' '); el.appendChild(o); });
+    el.onchange = renderFlags;
+  };
+  fill('#fStatus',st); fill('#fVar',vr); fill('#fType',ft);
+  const vs = $('#varSel');
+  (S.data.meta.variables||[]).forEach(v=>{
+    const o=document.createElement('option'); o.value=v; o.textContent=v; vs.appendChild(o); });
+  $('#fStatus').onchange=$('#fVar').onchange=$('#fType').onchange=renderFlags;
+}
+
+function renderFlags(){
+  const st=$('#fStatus').value, vr=$('#fVar').value, ft=$('#fType').value;
+  const rows = S.flags.filter(f=>(!st||f.status===st)&&(!vr||f.variable===vr)&&(!ft||f.fault_type===ft));
+  $('#flagCount').textContent = `${rows.length} of ${S.flags.length} flags`;
+  if(!rows.length){ $('#flagTable').innerHTML='<div class="empty">no flags match</div>'; return; }
+  let h = `<table><thead><tr><th>time</th><th>sensor</th><th>deviating feature</th>
+    <th>dir</th><th>fault type</th><th class="num">z</th><th class="num">contrib</th>
+    <th class="num">conf</th><th>status</th></tr></thead><tbody>`;
+  for(const f of rows.slice(0,600)){
+    h += `<tr onclick="openDrawer(${f.step})">
+      <td>${String(f.timestamp).slice(5,16)}</td>
+      <td>${f.variable}</td>
+      <td><code>${f.top_feature}</code></td>
+      <td class="muted">${f.direction}</td>
+      <td><span class="pill ft">${f.fault_type}</span></td>
+      <td class="num">${fmt(f.z_baseline,2)}</td>
+      <td class="num">${fmt(f.top_contribution,4)}</td>
+      <td class="num">${pct(f.confidence)}</td>
+      <td><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></td></tr>`;
+  }
+  $('#flagTable').innerHTML = h+'</tbody></table>';
+}
+
+const ACTIONS = {
+  spike:        'Transient impulse. If isolated, suppress as noise; if it recurs, inspect the sensor cable and ADC front-end.',
+  drift:        'Sustained offset. Schedule recalibration and compare against the co-located reference standard.',
+  stuck:        'Signal is frozen. Check the logger heartbeat and the sensor supply rail; a stuck value is usually a hardware fault.',
+  dropout:      'Records are missing. Check transmission link and power; distinguish a link outage from a sensor failure.',
+  quantization: 'Resolution has collapsed. Inspect the ADC configuration / averaging settings; data is degraded, not necessarily wrong.',
+  inconsistency:'Thermodynamically impossible pairing between temperature and humidity. Suspect the humidity sensor element.',
+  noise_burst:  'Variance inflated while the mean held. Typical of EMI or a loose shield; check grounding and cable routing.',
+  unknown:      'No diagnostic rule fired. Keep for manual review — unexplained anomalies are how new fault modes surface.'
+};
+
+function openDrawer(step){
+  const f = S.flags.find(x=>+x.step===+step);
+  if(!f) return;
+  const top3 = String(f.top3_features||'').split('; ').filter(Boolean);
+  $('#drawerBody').innerHTML = `
+    <h2>${f.variable} — ${f.fault_type.replace('_',' ')}</h2>
+    <div class="muted" style="font-size:12px">${f.timestamp} · step ${f.step} · detector ${f.detector}</div>
+    <div class="kv">
+      <b>Reported value</b><span>${f.observed_value===null?'missing':fmt(f.observed_value,2)+' '+f.unit}
+        (${f.direction} vs baseline)</span>
+      <b>Deviating feature</b><span><code>${f.top_feature}</code></span>
+      <b>Robust z</b><span>${fmt(f.z_baseline,2)} σ</span>
+      <b>Contribution</b><span>${fmt(f.top_contribution,4)} (${pct(f.top_share)} of positive mass)</span>
+      <b>Rule fired</b><span><code>${f.rule}</code></span>
+      <b>QC corroboration</b><span>${f.qc_votes} rule hit(s)</span>
+      <b>Confidence</b><span>${pct(f.confidence)}</span>
+      <b>Status</b><span><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></span>
+    </div>
+    <h3 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px">Evidence</h3>
+    <pre>${f.evidence}</pre>
+    <h3 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-top:14px">
+      Top-3 occlusion contributions</h3>
+    <pre>${top3.join('\n') || 'n/a'}</pre>
+    <p class="hint">Contribution = anomaly score lost when that feature is reset to its
+      training median. Larger means the feature carries more of the decision.
+      Contributions interact, so they are ranked — not summed.</p>
+    <h3 style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-top:14px">
+      Recommended action</h3>
+    <div class="verdict">${ACTIONS[f.fault_type]||ACTIONS.unknown}</div>`;
+  $('#drawer').classList.add('on');
+}
+function closeDrawer(){ $('#drawer').classList.remove('on'); }
+
+/* ===================== comparison ===================== */
+async function loadCompare(){
+  const r = await fetch('/api/compare');
+  S.cmp = await r.json();
+  $('#verdict').textContent = S.cmp.verdict;
+  const rows = S.cmp.comparison;
+  let h = '<table><thead><tr><th>metric</th>';
+  rows.forEach(r=>h+=`<th class="num">${r.model}</th>`);
+  h += '<th>better</th></tr></thead><tbody>';
+  const metrics = [['pr_auc','PR-AUC (primary)'],['roc_auc','ROC-AUC'],['precision','precision'],
+    ['recall','recall'],['f1','F1'],['window_recall','window recall'],
+    ['false_alarms_per_day','false alarms / day'],['median_latency_steps','median latency (steps)'],
+    ['flag_rate','flag rate']];
+  for(const [k,label] of metrics){
+    const v0=rows[0]?.[k], v1=rows[1]?.[k];
+    const lowerBetter = k.startsWith('false_alarms')||k.includes('latency');
+    let win='';
+    if(v0!=null&&v1!=null&&!Number.isNaN(v0)&&!Number.isNaN(v1))
+      win = (lowerBetter ? (v0<v1?rows[0].model:rows[1].model) : (v0>v1?rows[0].model:rows[1].model));
+    h += `<tr><td>${label}</td>`;
+    rows.forEach(r=>h+=`<td class="num">${r[k]==null?'—':fmt(r[k],3)}</td>`);
+    h += `<td class="muted">${win}</td></tr>`;
+  }
+  $('#cmpTable').innerHTML = h+'</tbody></table>';
+}
+
+function drawCompare(){
+  if(!S.cmp) return;
+  const cv=$('#cmpChart'), dpr=window.devicePixelRatio||1;
+  const W=cv.clientWidth, H=260;
+  cv.width=W*dpr; cv.height=H*dpr; cv.style.height=H+'px';
+  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const rows=S.cmp.comparison;
+  const keys=[['pr_auc','PR-AUC'],['roc_auc','ROC'],['precision','Prec'],['recall','Recall'],
+              ['f1','F1'],['window_recall','Episode']];
+  const padL=44,padB=34,padT=16,pw=W-padL-20,ph=H-padB-padT;
+  const colors=['#4F46E5','#0EA5A4'];
+  for(let k=0;k<=4;k++){
+    const y=padT+ph*k/4;
+    g.strokeStyle='#E1E7F1'; g.beginPath(); g.moveTo(padL,y); g.lineTo(W-20,y); g.stroke();
+    g.fillStyle='#64748B'; g.font='10px ui-monospace,monospace';
+    g.textAlign='right'; g.textBaseline='middle';
+    g.fillText((1-k/4).toFixed(2), padL-6, y);
+  }
+  const gw=pw/keys.length, bw=Math.min(26,gw/3);
+  keys.forEach(([k,label],i)=>{
+    rows.forEach((r,j)=>{
+      const v=Math.max(0,Math.min(1, Number(r[k]??0)));
+      const x=padL+i*gw+gw/2+(j-0.5)*bw*1.25-bw/2;
+      const hgt=v*ph;
+      g.fillStyle=colors[j]; g.fillRect(x,padT+ph-hgt,bw,hgt);
+    });
+    g.fillStyle='#64748B'; g.font='10px ui-monospace,monospace'; g.textAlign='center';
+    g.textBaseline='top'; g.fillText(label, padL+i*gw+gw/2, padT+ph+8);
+  });
+  rows.forEach((r,j)=>{
+    g.fillStyle=colors[j]; g.fillRect(W-212+j*108, 4, 9, 9);
+    g.fillStyle='#64748B'; g.textAlign='left'; g.textBaseline='middle';
+    g.fillText(r.model, W-199+j*108, 9);
+  });
+}
+
+/* ===================== data quality ===================== */
+async function loadQc(){
+  const s = S.data.qc_summary;
+  $('#dqKpis').innerHTML = [
+    kpi('Completeness', pct(s.completeness_pct/100), `${s.missing_cells} missing cells of ${s.sensor_cells.toLocaleString()}`),
+    kpi('Duplicate timestamps', s.duplicate_timestamps, 'QC-02'),
+    kpi('Max gap', fmt(s.max_gap_min,0)+' min', `expected ${s.expected_interval_min} min · QC-01`),
+    kpi('Rule events', s.events_total, 'deterministic hits'),
+    kpi('Records', s.records.toLocaleString(), 'logged intervals')
+  ].join('');
+  $('#qcRules').innerHTML = barList(s.events_per_rule, null, 'var(--warn)');
+  $('#qcVars').innerHTML  = barList(s.events_per_variable, null, 'var(--teal)');
+  const ev = await (await fetch('/api/qc')).json();
+  const rows = ev.recent_events.slice(-80).reverse();
+  if(!rows.length){ $('#qcEvents').innerHTML='<div class="empty">no rule events</div>'; return; }
+  let h='<table><thead><tr><th>time</th><th>variable</th><th>rule</th><th>detail</th></tr></thead><tbody>';
+  for(const e of rows)
+    h+=`<tr><td>${String(e.timestamp).slice(5,16)}</td><td>${e.variable}</td>
+        <td><span class="pill">${e.rule_id} ${e.rule_name}</span></td>
+        <td class="muted">${e.detail}</td></tr>`;
+  $('#qcEvents').innerHTML=h+'</tbody></table>';
+}
+
+/* ===================== header particle field ===================== */
+/* Airborne particulate drifting across the whole header. A canvas rather than a
+   video file: loops forever, weighs nothing, needs no network, no autoplay
+   block, and stays crisp on a projector. Full-width because a right-hand block
+   collided with the subtitle on narrow screens. */
+(function airField(){
+  const cv = document.getElementById('air');
+  if(!cv || !cv.getContext) return;
+  const g = cv.getContext('2d');
+  const reduce = window.matchMedia &&
+                 window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const INDIGO = '79,70,229', TEAL = '14,165,164';
+  let W=0,H=0,dpr=1,parts=[],t=0,raf=null;
+
+  function size(){
+    const r = cv.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    W = Math.max(60, r.width); H = Math.max(40, r.height);
+    cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+    g.setTransform(dpr,0,0,dpr,0,0);
+    if(!parts.length){
+      const n = Math.max(18, Math.min(48, Math.round(W/24)));
+      for(let i=0;i<n;i++){
+        parts.push({
+          a: Math.random()*Math.PI*2,
+          rx: (0.05 + Math.random()*0.32)*W,
+          ry: (0.16 + Math.random()*0.60)*H,
+          sp: (0.0014 + Math.random()*0.0034) * (Math.random()<0.5?-1:1),
+          sz: 1 + Math.random()*1.9,
+          hue: Math.random()<0.60 ? INDIGO : TEAL,
+          rise: 0.05 + Math.random()*0.14,
+          oy: 0
+        });
+      }
+    }
+  }
+
+  function frame(){
+    g.clearRect(0,0,W,H);
+    const cx = W*0.5, cy = H*0.5;
+
+    for(let s=0;s<3;s++){
+      g.beginPath();
+      for(let x=0;x<=W;x+=8){
+        const y = cy + Math.sin((x/W)*6 + t*0.010 + s*1.7)*(H*0.16 + s*4)
+                    - H*0.04 + s*H*0.05;
+        x ? g.lineTo(x,y) : g.moveTo(x,y);
+      }
+      g.strokeStyle = 'rgba(' + (s%2 ? TEAL : INDIGO) + ',0.07)';
+      g.lineWidth = 1; g.stroke();
+    }
+
+    const pts = [];
+    parts.forEach(p=>{
+      p.a += p.sp; p.oy -= p.rise;
+      const x = cx + Math.cos(p.a)*p.rx;
+      let y = cy + Math.sin(p.a)*p.ry + p.oy;
+      if(y < -10){ p.oy += H + 20; y += H + 20; }
+      pts.push([x,y]);
+      g.beginPath(); g.arc(x, y, p.sz, 0, Math.PI*2);
+      g.fillStyle = 'rgba(' + p.hue + ',0.45)'; g.fill();
+    });
+
+    for(let i=0;i<pts.length;i++){
+      for(let j=i+1;j<pts.length;j++){
+        const dx=pts[i][0]-pts[j][0], dy=pts[i][1]-pts[j][1], d2=dx*dx+dy*dy;
+        if(d2 < 1600){
+          g.strokeStyle='rgba(79,70,229,' + (0.13*(1-d2/1600)).toFixed(3) + ')';
+          g.lineWidth=0.8;
+          g.beginPath(); g.moveTo(pts[i][0],pts[i][1]); g.lineTo(pts[j][0],pts[j][1]); g.stroke();
+        }
+      }
+    }
+    t++;
+    if(!reduce) raf = requestAnimationFrame(frame);
+  }
+
+  function start(){ size(); cancelAnimationFrame(raf); frame(); }
+  start();
+  // ResizeObserver rather than window.resize: it also fires when the canvas was
+  // hidden at load, so the backing store is never left at the 300x150 default.
+  if(window.ResizeObserver){
+    new ResizeObserver(()=>{ size(); if(reduce) frame(); }).observe(cv);
+  } else {
+    window.addEventListener('resize', ()=>{ size(); if(reduce) frame(); });
+  }
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden) cancelAnimationFrame(raf);
+    else if(!reduce){ cancelAnimationFrame(raf); frame(); }
+  });
+})();
+
+/* Per-sensor illustration strip: one inline SVG per instrument. Decorative, but
+   driven by real counts so it also reads as a status board. */
+function sensorIcon(kind, color){
+  const S = {
+    air_temp: "<circle cx='13' cy='8' r='4'/><path d='M13 12v9'/><circle cx='13' cy='23' r='3.4'/>",
+    rel_humidity: "<path d='M13 4c4 5.5 7 8.6 7 12a7 7 0 0 1-14 0c0-3.4 3-6.5 7-12z'/>",
+    pressure: "<path d='M5 19a8 8 0 1 1 16 0'/><path d='M13 19l4.6-5.2'/><circle cx='13' cy='19' r='1.4'/>",
+    wind_speed: "<path d='M3 10h12a3 3 0 1 0-3-3'/><path d='M3 16h16a3 3 0 1 1-3 3'/><path d='M3 13h9'/>",
+    rainfall: "<path d='M8 14a4.4 4.4 0 0 1 .9-8.7A5.6 5.6 0 0 1 19 7.4 3.6 3.6 0 0 1 18.5 14H8z'/><path d='M9 18l-1 3M13 18l-1 3M17 18l-1 3'/>"
+  };
+  const d = S[kind] || "<circle cx='13' cy='13' r='7'/>";
+  return "<svg viewBox='0 0 26 26' fill='none' stroke='" + color +
+         "' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>" + d + "</svg>";
+}
+
+function renderSensorArt(){
+  const el = document.getElementById('kpis');
+  if(!el || !S.flags) return;
+  const names = {air_temp:'Air temperature', rel_humidity:'Relative humidity',
+                 pressure:'Pressure', wind_speed:'Wind speed', rainfall:'Rainfall'};
+  const units = {air_temp:'°C', rel_humidity:'%', pressure:'hPa', wind_speed:'m/s', rainfall:'mm'};
+  const html = Object.keys(names).map(v=>{
+    const n = S.flags.filter(f=>f.variable===v).length;
+    const col = n>60 ? '#DC2626' : n>25 ? '#B45309' : '#0E9F6E';
+    const word = n>60 ? 'high' : n>25 ? 'elevated' : 'nominal';
+    return "<div class='sensorchip'>" + sensorIcon(v, col) +
+      "<div><div class='n'>" + names[v] + "</div>" +
+      "<div class='c'><span class='dot' style='background:" + col + "'></span>" +
+      n + " flags · " + word + "</div></div></div>";
+  }).join('');
+  el.insertAdjacentHTML('beforeend', "<div class='sensorstrip'>" + "<div class='phototile'><img src='img/aws-sensors.jpg' alt='Sensor cluster'><span>SENSOR CLUSTER</span></div>" + html + "</div>");
+}
+
+/* Per-sensor illustration strip: one inline SVG per instrument. Decorative, but
+   driven by real counts so it also reads as a status board. */
+function sensorIcon(kind, color){
+  const S = {
+    air_temp: "<circle cx='13' cy='8' r='4'/><path d='M13 12v9'/><circle cx='13' cy='23' r='3.4'/>",
+    rel_humidity: "<path d='M13 4c4 5.5 7 8.6 7 12a7 7 0 0 1-14 0c0-3.4 3-6.5 7-12z'/>",
+    pressure: "<path d='M5 19a8 8 0 1 1 16 0'/><path d='M13 19l4.6-5.2'/><circle cx='13' cy='19' r='1.4'/>",
+    wind_speed: "<path d='M3 10h12a3 3 0 1 0-3-3'/><path d='M3 16h16a3 3 0 1 1-3 3'/><path d='M3 13h9'/>",
+    rainfall: "<path d='M8 14a4.4 4.4 0 0 1 .9-8.7A5.6 5.6 0 0 1 19 7.4 3.6 3.6 0 0 1 18.5 14H8z'/><path d='M9 18l-1 3M13 18l-1 3M17 18l-1 3'/>"
+  };
+  const d = S[kind] || "<circle cx='13' cy='13' r='7'/>";
+  return "<svg viewBox='0 0 26 26' fill='none' stroke='" + color +
+         "' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>" + d + "</svg>";
+}
+
+function renderSensorArt(){
+  const el = document.getElementById('kpis');
+  if(!el || !S.flags) return;
+  const names = {air_temp:'Air temperature', rel_humidity:'Relative humidity',
+                 pressure:'Pressure', wind_speed:'Wind speed', rainfall:'Rainfall'};
+  const units = {air_temp:'°C', rel_humidity:'%', pressure:'hPa', wind_speed:'m/s', rainfall:'mm'};
+  const html = Object.keys(names).map(v=>{
+    const n = S.flags.filter(f=>f.variable===v).length;
+    const col = n>60 ? '#DC2626' : n>25 ? '#B45309' : '#0E9F6E';
+    const word = n>60 ? 'high' : n>25 ? 'elevated' : 'nominal';
+    return "<div class='sensorchip'>" + sensorIcon(v, col) +
+      "<div><div class='n'>" + names[v] + "</div>" +
+      "<div class='c'><span class='dot' style='background:" + col + "'></span>" +
+      n + " flags · " + word + "</div></div></div>";
+  }).join('');
+  el.insertAdjacentHTML('beforeend', "<div class='sensorstrip'>" + "<div class='phototile'><img src='img/aws-sensors.jpg' alt='Sensor cluster'><span>SENSOR CLUSTER</span></div>" + html + "</div>");
+}
+
+/* Hero banner: the one photographic anchor on the page. Text sits on a left-side
+   gradient so it stays readable over any crop of the photo. */
+function renderBanner(){
+  const el = document.getElementById('kpis');
+  if(!el) return;
+  el.insertAdjacentHTML('afterbegin',
+    "<div class='banner'>" +
+    "<img class='bimg' src='img/aws-station.jpg' alt='Automatic weather station in the field'>" +
+    "<div class='bveil'></div>" +
+    "<div class='btxt'>" +
+      "<h2>Automatic Weather Station</h2>" +
+      "<p>Ten-minute telemetry from five instruments, screened for faults before it " +
+      "reaches the climate archive. Every alarm names the sensor and the statistic " +
+      "that moved.</p>" +
+      "<div class='pillrow'>" +
+        "<span class='pb'>4,320 records</span>" +
+        "<span class='pb'>14 fault episodes</span>" +
+        "<span class='pb'>Isolation Forest + DBSCAN</span>" +
+        "<span class='pb'>cause named per alarm</span>" +
+      "</div>" +
+    "</div></div>");
+}
+
+/* Keyboard dismissal for the evidence drawer. Reported missing in review:
+   the panel could only be closed with the pointer, which fails keyboard users. */
+document.addEventListener("keydown", function(e){
+  if(e.key === "Escape" || e.key === "Esc"){
+    var d = document.querySelector(".drawer");
+    if(d && (d.classList.contains("on") || d.classList.contains("open"))){
+      d.classList.remove("on");
+      d.classList.remove("open");
+    }
+  }
+});
+</script>
+</body>
+</html>

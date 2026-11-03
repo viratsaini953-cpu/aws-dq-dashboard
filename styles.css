@@ -491,3 +491,28 @@ pre{
   .card{break-inside:avoid;border-color:#ccc}
   main{padding:0}
 }
+
+/* ---------- 14. page rail -------------------------------------------------
+   ONE source of horizontal truth.
+
+   The bug: main carried `max-width:1560px` with NO auto margin, so on any
+   window wider than that the content hugged the left edge and left dead space
+   on the right. Worse, the header/nav sat on a fixed 32px gutter, so the nav
+   never lined up with the cards underneath it.
+
+   The fix: both header and main resolve their inline padding from the same
+   centred 1280px column. Padding percentages resolve against the containing
+   block, so this centres without a wrapper element, and the header stays
+   full-bleed so its hairline still runs edge to edge.
+   ------------------------------------------------------------------------- */
+header,
+main{
+  padding-left:max(32px, calc((100% - 1280px) / 2 + 32px));
+  padding-right:max(32px, calc((100% - 1280px) / 2 + 32px));
+}
+main{max-width:none}
+
+@media(max-width:720px){
+  header,
+  main{padding-left:16px;padding-right:16px}
+}
